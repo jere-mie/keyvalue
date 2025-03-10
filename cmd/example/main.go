@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+
+	"github.com/jere-mie/keyvalue"
 )
 
 func main() {
 	// Create a new store with in-memory storage enabled
-	store := NewStore("test_store.log", true, 100, 256, 4096)
+	store := keyvalue.NewStore("test_store.log", true, 100, 256, 4096)
 
 	// Test Set functionality
 	err := store.Set("key1", "value1")
