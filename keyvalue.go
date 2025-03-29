@@ -26,14 +26,21 @@ type Store struct {
 	maxValueSize int // Max value size
 }
 
-func NewStore(filename string, useMemory bool, maxKeys, maxKeySize, maxValueSize int) *Store {
+type StoreConfig struct {
+	UseMemory    bool // Whether to store in memory
+	MaxKeys      int  // Maximum number of entries
+	MaxKeySize   int  // Max key size
+	MaxValueSize int  // Max value size
+}
+
+func NewStore(filename string, config StoreConfig) *Store {
 	s := &Store{
 		filename:     filename,
-		useMemory:    useMemory,
+		useMemory:    config.UseMemory,
 		data:         make(map[string]string),
-		maxKeys:      maxKeys,
-		maxKeySize:   maxKeySize,
-		maxValueSize: maxValueSize,
+		maxKeys:      config.MaxKeys,
+		maxKeySize:   config.MaxKeySize,
+		maxValueSize: config.MaxValueSize,
 	}
 
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
@@ -42,7 +49,7 @@ func NewStore(filename string, useMemory bool, maxKeys, maxKeySize, maxValueSize
 	}
 	s.file = file
 
-	if useMemory {
+	if config.UseMemory {
 		s.load()
 	}
 
@@ -148,10 +155,12 @@ func (s *Store) Get(key string) (string, bool) {
 		}
 		if entry.Key == key {
 			if entry.Deleted {
-				return "", false // Key was deleted
+				lastValue = ""
+				exists = false
+			} else {
+				lastValue = entry.Value
+				exists = true
 			}
-			lastValue = entry.Value
-			exists = true
 		}
 	}
 
@@ -205,4 +214,60 @@ func (s *Store) Compact() {
 	os.Rename(tempFile, s.filename)
 	s.file.Close()
 	s.file, _ = os.OpenFile(s.filename, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+}
+
+func (s *Store) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.file.Close()
+}
+
+func (s *Store) FindByFunction(fn func(string, string) bool) ([]Entry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var results = make(map[string]string)
+	for key, value := range s.data {
+		if fn(key, value) {
+			results[key] = value
+		}
+	}
+
+	// file-only mode
+	if !s.useMemory {
+		file, err := os.Open(s.filename)
+		if err != nil {
+			fmt.Println("Error opening log file:", err)
+			return nil, err
+		}
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
+			var entry Entry
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				continue
+			}
+			if entry.Deleted {
+				continue
+			}
+			if fn(entry.Key, entry.Value) {
+				results[entry.Key] = entry.Value
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			fmt.Println("Error reading log file:", err)
+			return nil, err
+		}
+	}
+
+	var result []Entry
+	for key, value := range results {
+		result = append(result, Entry{Key: key, Value: value})
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no entries found matching the criteria")
+	}
+
+	return result, nil
 }
